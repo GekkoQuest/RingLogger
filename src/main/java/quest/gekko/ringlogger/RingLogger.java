@@ -1,25 +1,23 @@
 package quest.gekko.ringlogger;
 
+import quest.gekko.ringlogger.model.LogLevel;
+import quest.gekko.ringlogger.writer.LogWriter;
+import quest.gekko.ringlogger.util.PaddedAtomicLong;
+
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.LockSupport;
-import java.util.function.Consumer;
 
 public final class RingLogger {
-    // Log levels
-    public static final byte TRACE = 1;
-    public static final byte DEBUG = 2;
-    public static final byte INFO = 3;
-    public static final byte WARN = 4;
-    public static final byte ERROR = 5;
-
-    private static final RingLogger INSTANCE = new RingLogger();
-
     // Ring buffer configuration
     private static final int BUFFER_SIZE = 4096;
     private static final int RING_SIZE = 16384;
     private static final int RING_MASK = RING_SIZE - 1; // Bitmask for fast modulo
     private static final int THREAD_PRIORITY = Thread.MAX_PRIORITY - 1;
+
+    // Singleton instance
+    private static final RingLogger INSTANCE = new RingLogger();
 
     // Thread-local scratch space for building log entries
     private static final ThreadLocal<ByteBuffer> THREAD_LOCAL_BUFFER =
@@ -33,25 +31,13 @@ public final class RingLogger {
     private final PaddedAtomicLong producerSequence = new PaddedAtomicLong(0);
     private final PaddedAtomicLong consumerSequence = new PaddedAtomicLong(0);
 
+    // Logging thread and control
     private final Thread loggerThread;
     private final AtomicBoolean running = new AtomicBoolean(true);
-    private final Consumer<ByteBuffer> logWriter;
+    private final LogWriter logWriter;
 
     // Global minimum log level (filtering)
-    private volatile byte minimumLogLevel = INFO;
-
-    // Log entry format: timestamp, level, component ID, length, message
-    private static final int TIMESTAMP_SIZE = Long.BYTES;
-    private static final int LEVEL_SIZE = Byte.BYTES;
-    private static final int COMPONENT_ID_SIZE = Byte.BYTES;
-    private static final int MESSAGE_LENGTH_SIZE = Integer.BYTES;
-
-    // Offsets for decoding log entries
-    private static final int TIMESTAMP_OFFSET = 0;
-    private static final int LEVEL_OFFSET = TIMESTAMP_OFFSET + TIMESTAMP_SIZE;
-    private static final int COMPONENT_ID_OFFSET = LEVEL_OFFSET + LEVEL_SIZE;
-    private static final int MESSAGE_LENGTH_OFFSET = COMPONENT_ID_OFFSET + COMPONENT_ID_SIZE;
-    private static final int MESSAGE_OFFSET = MESSAGE_LENGTH_OFFSET + MESSAGE_LENGTH_SIZE;
+    private volatile LogLevel minimumLogLevel = LogLevel.INFO;
 
     private RingLogger() {
         // Initialize reusable buffer pool to avoid allocation at runtime
@@ -59,13 +45,41 @@ public final class RingLogger {
             bufferPool[i] = ByteBuffer.allocateDirect(BUFFER_SIZE);
         }
 
-        this.logWriter = defaultLogWriter();
+        this.logWriter = LogWriter.consoleWriter();
         this.loggerThread = startLoggerThread();
     }
 
-    // Main public API: write a String log message
-    public void writeString(final byte level, final byte componentId, final String message) {
-        if (level < minimumLogLevel) return;
+    /**
+     * Write a string log message.
+     *
+     * @param level log level
+     * @param componentId component identifier
+     * @param message log message
+     */
+    public void writeString(final LogLevel level, final byte componentId, final String message) {
+        writeMessage(level, componentId, message.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /**
+     * Write a byte array log message.
+     *
+     * @param level log level
+     * @param componentId component identifier
+     * @param messageBytes log message bytes
+     */
+    public void writeBytes(final LogLevel level, final byte componentId, final byte[] messageBytes) {
+        writeMessage(level, componentId, messageBytes);
+    }
+
+    /**
+     * Internal method to write log messages.
+     *
+     * @param level log level
+     * @param componentId component identifier
+     * @param messageBytes log message bytes
+     */
+    private void writeMessage(final LogLevel level, final byte componentId, final byte[] messageBytes) {
+        if (level.getValue() < minimumLogLevel.getValue()) return;
 
         try {
             final ByteBuffer buffer = THREAD_LOCAL_BUFFER.get();
@@ -73,33 +87,7 @@ public final class RingLogger {
 
             // Encode log fields into buffer
             buffer.putLong(System.nanoTime());
-            buffer.put(level);
-            buffer.put(componentId);
-
-            final byte[] messageBytes = message.getBytes();
-            final int availableSpace = buffer.capacity() - buffer.position() - 4;
-            final int messageLength = Math.min(messageBytes.length, availableSpace);
-
-            buffer.putInt(messageLength);
-            buffer.put(messageBytes, 0, messageLength);
-            buffer.flip();
-
-            publishLogEntry(buffer);
-        } catch (final Exception e) {
-            System.err.println("Logging failure: " + e.getMessage());
-        }
-    }
-
-    // Overload for logging raw byte messages
-    public void writeBytes(final byte level, final byte componentId, final byte[] messageBytes) {
-        if (level < minimumLogLevel) return;
-
-        try {
-            final ByteBuffer buffer = THREAD_LOCAL_BUFFER.get();
-            buffer.clear();
-
-            buffer.putLong(System.nanoTime());
-            buffer.put(level);
+            buffer.put(level.getValue());
             buffer.put(componentId);
 
             final int availableSpace = buffer.capacity() - buffer.position() - 4;
@@ -115,7 +103,11 @@ public final class RingLogger {
         }
     }
 
-    // Places a log buffer into the ring for the background thread to consume
+    /**
+     * Places a log buffer into the ring for the background thread to consume.
+     *
+     * @param buffer ByteBuffer containing log entry
+     */
     private void publishLogEntry(final ByteBuffer buffer) {
         final long sequence = producerSequence.get();
 
@@ -134,19 +126,11 @@ public final class RingLogger {
         producerSequence.incrementAndGet();
     }
 
-    // Clean shutdown hook for logger thread
-    public void shutdown() {
-        running.set(false);
-        loggerThread.interrupt();
-
-        try {
-            loggerThread.join(1000);
-        } catch (final InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-    }
-
-    // Background thread continuously flushes entries to logWriter
+    /**
+     * Starts the background logger thread.
+     *
+     * @return configured logging thread
+     */
     private Thread startLoggerThread() {
         final Thread thread = new Thread(() -> {
             long nextSequence = consumerSequence.get();
@@ -158,7 +142,7 @@ public final class RingLogger {
                         final ByteBuffer entry = ringBuffer[index];
 
                         if (entry != null) {
-                            logWriter.accept(entry);
+                            logWriter.write(entry);
                             nextSequence++;
                             consumerSequence.set(nextSequence);
                         }
@@ -179,47 +163,35 @@ public final class RingLogger {
         return thread;
     }
 
-    // Default log output logic to console
-    private Consumer<ByteBuffer> defaultLogWriter() {
-        return buffer -> {
-            final long timestamp = buffer.getLong(TIMESTAMP_OFFSET);
-            final byte level = buffer.get(LEVEL_OFFSET);
-            final byte componentId = buffer.get(COMPONENT_ID_OFFSET);
-            final int messageLength = buffer.getInt(MESSAGE_LENGTH_OFFSET);
+    /**
+     * Performs a clean shutdown of the logger thread.
+     */
+    public void shutdown() {
+        running.set(false);
+        loggerThread.interrupt();
 
-            final byte[] messageBytes = new byte[messageLength];
-            buffer.position(MESSAGE_OFFSET);
-            buffer.get(messageBytes);
-
-            final String logMessage = String.format("[%d] [%s] [Component-%d] %s",
-                    timestamp, levelToString(level), componentId, new String(messageBytes));
-
-            if (level >= ERROR) {
-                System.err.println(logMessage);
-            } else {
-                System.out.println(logMessage);
-            }
-        };
+        try {
+            loggerThread.join(1000);
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
-    // Human-readable log level name
-    private static String levelToString(final byte level) {
-        return switch (level) {
-            case TRACE -> "TRACE";
-            case DEBUG -> "DEBUG";
-            case INFO -> "INFO";
-            case WARN -> "WARN";
-            case ERROR -> "ERROR";
-            default -> "UNKNOWN";
-        };
-    }
-
+    /**
+     * Retrieves the singleton RingLogger instance.
+     *
+     * @return RingLogger singleton instance
+     */
     public static RingLogger getInstance() {
         return INSTANCE;
     }
 
-    // Dynamically adjust log filtering at runtime
-    public void setMinimumLogLevel(final byte level) {
+    /**
+     * Dynamically adjust log filtering at runtime.
+     *
+     * @param level minimum log level to capture
+     */
+    public void setMinimumLogLevel(final LogLevel level) {
         this.minimumLogLevel = level;
     }
 }

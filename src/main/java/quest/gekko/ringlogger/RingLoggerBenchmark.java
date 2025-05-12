@@ -8,6 +8,7 @@ import org.openjdk.jmh.runner.RunnerException;
 import org.openjdk.jmh.runner.options.Options;
 import org.openjdk.jmh.runner.options.OptionsBuilder;
 import org.slf4j.LoggerFactory;
+import quest.gekko.ringlogger.model.LogLevel;
 
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.TimeUnit;
@@ -38,7 +39,7 @@ public class RingLoggerBenchmark {
     @Setup(Level.Trial)
     public void setupTrial() {
         ringLogger = RingLogger.getInstance();
-        ringLogger.setMinimumLogLevel(RingLogger.TRACE);
+        ringLogger.setMinimumLogLevel(LogLevel.TRACE);
         log4jLogger = LogManager.getLogger(RingLoggerBenchmark.class);
         slf4jLogger = LoggerFactory.getLogger(RingLoggerBenchmark.class);
 
@@ -60,32 +61,32 @@ public class RingLoggerBenchmark {
 
     @Benchmark
     public void ringLoggerShortString() {
-        ringLogger.writeString(RingLogger.INFO, COMPONENT_ID, shortMessage);
+        ringLogger.writeString(LogLevel.INFO, COMPONENT_ID, shortMessage);
     }
 
     @Benchmark
     public void ringLoggerMediumString() {
-        ringLogger.writeString(RingLogger.INFO, COMPONENT_ID, mediumMessage);
+        ringLogger.writeString(LogLevel.INFO, COMPONENT_ID, mediumMessage);
     }
 
     @Benchmark
     public void ringLoggerLongString() {
-        ringLogger.writeString(RingLogger.INFO, COMPONENT_ID, longMessage);
+        ringLogger.writeString(LogLevel.INFO, COMPONENT_ID, longMessage);
     }
 
     @Benchmark
     public void ringLoggerShortBytes() {
-        ringLogger.writeBytes(RingLogger.INFO, COMPONENT_ID, shortBytes);
+        ringLogger.writeBytes(LogLevel.INFO, COMPONENT_ID, shortBytes);
     }
 
     @Benchmark
     public void ringLoggerMediumBytes() {
-        ringLogger.writeBytes(RingLogger.INFO, COMPONENT_ID, mediumBytes);
+        ringLogger.writeBytes(LogLevel.INFO, COMPONENT_ID, mediumBytes);
     }
 
     @Benchmark
     public void ringLoggerLongBytes() {
-        ringLogger.writeBytes(RingLogger.INFO, COMPONENT_ID, longBytes);
+        ringLogger.writeBytes(LogLevel.INFO, COMPONENT_ID, longBytes);
     }
 
     // --- Log4j Benchmarks ---

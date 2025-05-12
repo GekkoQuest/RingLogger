@@ -1,4 +1,4 @@
-package quest.gekko.ringlogger;
+package quest.gekko.ringlogger.util;
 
 import java.util.concurrent.atomic.AtomicLong;
 
